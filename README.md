@@ -5,7 +5,7 @@ We will use **PyInstaller**.
 1.  **Install PyInstaller:**
     Open your terminal/command prompt and run:
     ```bash
-    pip install pyinstaller
+    pip install -r requirements.txt
     ```
 
 2.  **Build the EXE:**

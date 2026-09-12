@@ -1,0 +1,27 @@
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Python caches and build metadata
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+
+# PyInstaller output
+build/
+dist/
+
+# Test and coverage artifacts
+.pytest_cache/
+.coverage
+htmlcov/
+
+# IDE and local settings
+.vscode/
+.idea/
+
+# Windows files
+Thumbs.db
+Desktop.ini
