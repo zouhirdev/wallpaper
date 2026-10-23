@@ -1,0 +1,464 @@
+This file is a merged representation of the entire codebase, combined into a single document by Repomix.
+
+<file_summary>
+This section contains a summary of this file.
+
+<purpose>
+This file contains a packed representation of the entire repository's contents.
+It is designed to be easily consumable by AI systems for analysis, code review,
+or other automated processes.
+</purpose>
+
+<file_format>
+The content is organized as follows:
+1. This summary section
+2. Repository information
+3. Directory structure
+4. Repository files (if enabled)
+5. Multiple file entries, each consisting of:
+  - File path as an attribute
+  - Full contents of the file
+</file_format>
+
+<usage_guidelines>
+- This file should be treated as read-only. Any changes should be made to the
+  original repository files, not this packed version.
+- When processing this file, use the file path to distinguish
+  between different files in the repository.
+- Be aware that this file may contain sensitive information. Handle it with
+  the same level of security as you would the original repository.
+</usage_guidelines>
+
+<notes>
+- Some files may have been excluded based on .gitignore rules and Repomix's configuration
+- Binary files are not included in this packed representation. Please refer to the Repository Structure section for a complete list of file paths, including binary files
+- Files matching patterns in .gitignore are excluded
+- Files matching default ignore patterns are excluded
+- Files are sorted by Git change count (files with more changes are at the bottom)
+</notes>
+
+</file_summary>
+
+<directory_structure>
+.gitignore
+bing_clone.py
+bing_clone.spec
+icon.ico
+README.md
+requirements.txt
+</directory_structure>
+
+<files>
+This section contains the contents of the repository's files.
+
+<file path=".gitignore">
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Python caches and build metadata
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+
+# PyInstaller output
+build/
+dist/
+
+# Test and coverage artifacts
+.pytest_cache/
+.coverage
+htmlcov/
+
+# IDE and local settings
+.vscode/
+.idea/
+
+# Windows files
+Thumbs.db
+Desktop.ini
+</file>
+
+<file path="bing_clone.py">
+import sys
+import os
+import requests
+import ctypes
+import threading
+from PyQt5.QtWidgets import (QApplication, QWidget, QLabel, QPushButton, 
+                             QVBoxLayout, QHBoxLayout, QSystemTrayIcon, 
+                             QMenu, QAction, QDesktopWidget)
+from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QObject, QEvent
+from PyQt5.QtGui import QPixmap, QIcon
+
+# ==========================================
+# CONFIGURATION & CONSTANTS
+# ==========================================
+BING_API_URL = "https://www.bing.com/HPImageArchive.aspx?format=js&idx=0&n=7&mkt=en-US"
+BASE_URL = "https://www.bing.com"
+SAVE_DIR = os.path.join(os.path.expanduser("~"), "Pictures", "BingWallpapers")
+CHECK_INTERVAL_MS = 2 * 60 * 60 * 1000  # 2 Hours
+
+if not os.path.exists(SAVE_DIR):
+    os.makedirs(SAVE_DIR)
+
+
+def resource_path(relative_path):
+    """ Get absolute path to resource, works for dev and for PyInstaller """
+    try:
+        # PyInstaller creates a temp folder and stores path in _MEIPASS
+        base_path = sys._MEIPASS
+    except Exception:
+        base_path = os.path.abspath(".")
+
+    return os.path.join(base_path, relative_path)
+
+
+
+# ==========================================
+# WALLPAPER MANAGER (LOGIC LAYER)
+# ==========================================
+class WallpaperManager:
+    """Handles fetching, downloading, and setting wallpapers."""
+    
+    @staticmethod
+    def get_wallpaper_data():
+        """Fetches the last 7 days of wallpaper data from Bing."""
+        try:
+            response = requests.get(BING_API_URL, timeout=10)
+            response.raise_for_status()
+            data = response.json()
+            images = data.get('images', [])
+            
+            processed_list = []
+            for img in images:
+                url = BASE_URL + img['url']
+                date_str = img['startdate']
+                filename = f"{date_str}.jpg"
+                filepath = os.path.join(SAVE_DIR, filename)
+                
+                processed_list.append({
+                    'url': url,
+                    'path': filepath,
+                    'title': img.get('copyright', 'Bing Wallpaper')
+                })
+            return processed_list
+        except Exception as e:
+            print(f"Error fetching data: {e}")
+            return []
+
+    @staticmethod
+    def download_image(url, filepath):
+        """Downloads image if it doesn't exist."""
+        if not os.path.exists(filepath):
+            try:
+                img_data = requests.get(url, timeout=20).content
+                with open(filepath, 'wb') as handler:
+                    handler.write(img_data)
+                return True
+            except Exception as e:
+                print(f"Error downloading {url}: {e}")
+                return False
+        return True
+
+    @staticmethod
+    def set_wallpaper_to_system(filepath):
+        """Sets the desktop wallpaper using Windows API."""
+        if os.path.exists(filepath):
+            absolute_path = os.path.abspath(filepath)
+            # SPI_SETDESKWALLPAPER = 20, SPIF_UPDATEINIFILE = 0x01, SPIF_SENDWININICHANGE = 0x02
+            ctypes.windll.user32.SystemParametersInfoW(20, 0, absolute_path, 3)
+
+# ==========================================
+# WORKER THREAD (MULTITHREADING)
+# ==========================================
+class UpdateWorker(QObject):
+    """Background worker to download images without freezing GUI."""
+    finished = pyqtSignal(list) # Emits list of wallpaper dicts
+
+    def run(self):
+        wallpapers = WallpaperManager.get_wallpaper_data()
+        # Download all images in the list
+        for item in wallpapers:
+            WallpaperManager.download_image(item['url'], item['path'])
+        
+        # Determine valid downloaded wallpapers to send back
+        valid_wallpapers = [w for w in wallpapers if os.path.exists(w['path'])]
+        self.finished.emit(valid_wallpapers)
+
+# ==========================================
+# MINI GUI WINDOW (BOTTOM RIGHT)
+# ==========================================
+class MiniPreviewWindow(QWidget):
+    def __init__(self):
+        super().__init__()
+        self.wallpapers = []
+        self.current_index = 0
+        self.init_ui()
+
+    def init_ui(self):
+        # Qt.Tool makes it act like a palette window (doesn't show in taskbar)
+        # Frameless removes the title bar
+        self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setFixedSize(350, 250)
+        
+        self.setStyleSheet("""
+            QWidget { background-color: #2D2D2D; color: white; border-radius: 10px; }
+            QPushButton { background-color: #444; border: none; padding: 5px; border-radius: 5px; }
+            QPushButton:hover { background-color: #666; }
+            QLabel { font-size: 12px; }
+        """)
+
+        layout = QVBoxLayout()
+        
+        # Title
+        self.lbl_title = QLabel("Bing Wallpaper")
+        self.lbl_title.setAlignment(Qt.AlignCenter)
+        layout.addWidget(self.lbl_title)
+
+        # Image Preview
+        self.lbl_image = QLabel()
+        self.lbl_image.setFixedSize(330, 180)
+        self.lbl_image.setScaledContents(True)
+        self.lbl_image.setStyleSheet("border: 1px solid #555;")
+        layout.addWidget(self.lbl_image)
+
+        # Controls
+        btn_layout = QHBoxLayout()
+        
+        self.btn_prev = QPushButton("<")
+        self.btn_prev.clicked.connect(self.show_prev)
+        
+        self.lbl_date = QLabel("Today")
+        self.lbl_date.setAlignment(Qt.AlignCenter)
+        
+        self.btn_next = QPushButton(">")
+        self.btn_next.clicked.connect(self.show_next)
+
+        btn_layout.addWidget(self.btn_prev)
+        btn_layout.addWidget(self.lbl_date)
+        btn_layout.addWidget(self.btn_next)
+        
+        layout.addLayout(btn_layout)
+        self.setLayout(layout)
+
+    def update_data(self, wallpapers):
+        self.wallpapers = wallpapers
+        if self.wallpapers:
+            self.current_index = 0
+            self.refresh_view()
+            WallpaperManager.set_wallpaper_to_system(self.wallpapers[0]['path'])
+
+    def refresh_view(self):
+        if not self.wallpapers:
+            return
+
+        data = self.wallpapers[self.current_index]
+        
+        pixmap = QPixmap(data['path'])
+        self.lbl_image.setPixmap(pixmap)
+        
+        title = data['title'].split('(')[0].strip()
+        if len(title) > 40: title = title[:37] + "..."
+        self.lbl_title.setText(title)
+        
+        if self.current_index == 0:
+            self.lbl_date.setText("Today")
+        else:
+            self.lbl_date.setText(f"{self.current_index} days ago")
+
+    def show_prev(self):
+        if self.wallpapers and self.current_index < len(self.wallpapers) - 1:
+            self.current_index += 1
+            self.refresh_view()
+            WallpaperManager.set_wallpaper_to_system(self.wallpapers[self.current_index]['path'])
+
+    def show_next(self):
+        if self.wallpapers and self.current_index > 0:
+            self.current_index -= 1
+            self.refresh_view()
+            WallpaperManager.set_wallpaper_to_system(self.wallpapers[self.current_index]['path'])
+
+    def show_at_corner(self):
+        screen_geo = QDesktopWidget().availableGeometry()
+        x = screen_geo.width() - self.width() - 20
+        y = screen_geo.height() - self.height() - 20
+        self.move(x, y)
+        self.show()
+        self.raise_()           # Bring to front
+        self.activateWindow()   # Give it focus immediately
+
+    # ==========================================================
+    # THIS IS THE NEW CODE TO HANDLE CLICKING OUTSIDE
+    # ==========================================================
+    def changeEvent(self, event):
+        """Detects if the window loses focus (user clicked outside)."""
+        if event.type() == QEvent.ActivationChange:
+            if not self.isActiveWindow():
+                self.hide()
+        super().changeEvent(event)
+
+# ==========================================
+# MAIN APP CONTROLLER (SYSTEM TRAY)
+# ==========================================
+class BingTrayApp:
+    def __init__(self):
+        self.app = QApplication(sys.argv)
+        self.app.setQuitOnLastWindowClosed(False)
+
+        # Init GUI Window
+        self.mini_window = MiniPreviewWindow()
+
+        # Init Tray Icon
+        self.tray_icon = QSystemTrayIcon()
+        
+        # LOAD CUSTOM ICON HERE using resource_path
+        icon_path = resource_path("icon.ico")
+        self.tray_icon.setIcon(QIcon(icon_path)) 
+        
+        self.tray_icon.setVisible(True)
+        self.tray_icon.setToolTip("Bing Wallpaper Clone")
+
+        # Context Menu (Right Click)
+        self.menu = QMenu()
+        
+        action_update = QAction("Update Now", self.menu)
+        action_update.triggered.connect(self.start_update_thread)
+        self.menu.addAction(action_update)
+        
+        self.menu.addSeparator()
+        
+        action_exit = QAction("Exit", self.menu)
+        action_exit.triggered.connect(self.app.quit)
+        self.menu.addAction(action_exit)
+        
+        self.tray_icon.setContextMenu(self.menu)
+
+        # Handle Tray Click
+        self.tray_icon.activated.connect(self.on_tray_click)
+
+        # Timer
+        self.timer = QTimer()
+        self.timer.timeout.connect(self.start_update_thread)
+        self.timer.start(CHECK_INTERVAL_MS)
+
+        # Threading
+        self.thread = threading.Thread() 
+        
+        # Initial Update
+        self.start_update_thread()
+
+    def on_tray_click(self, reason):
+        if reason == QSystemTrayIcon.Trigger:
+            if self.mini_window.isVisible():
+                self.mini_window.hide()
+            else:
+                self.mini_window.show_at_corner()
+                self.mini_window.activateWindow()
+
+    def start_update_thread(self):
+        self.worker = UpdateWorker()
+        self.worker.finished.connect(self.on_update_finished)
+        self.thread_obj = threading.Thread(target=self.worker.run)
+        self.thread_obj.start()
+
+    def on_update_finished(self, wallpapers):
+        self.mini_window.update_data(wallpapers)
+
+    def run(self):
+        sys.exit(self.app.exec_())
+# ==========================================
+# ENTRY POINT
+# ==========================================
+if __name__ == "__main__":
+    try:
+        app_instance = BingTrayApp()
+        app_instance.run()
+    except KeyboardInterrupt:
+        sys.exit()
+</file>
+
+<file path="bing_clone.spec">
+# -*- mode: python ; coding: utf-8 -*-
+
+
+a = Analysis(
+    ['bing_clone.py'],
+    pathex=[],
+    binaries=[],
+    datas=[('icon.ico', '.')],
+    hiddenimports=[],
+    hookspath=[],
+    hooksconfig={},
+    runtime_hooks=[],
+    excludes=[],
+    noarchive=False,
+    optimize=0,
+)
+pyz = PYZ(a.pure)
+
+exe = EXE(
+    pyz,
+    a.scripts,
+    a.binaries,
+    a.datas,
+    [],
+    name='bing_clone',
+    debug=False,
+    bootloader_ignore_signals=False,
+    strip=False,
+    upx=True,
+    upx_exclude=[],
+    runtime_tmpdir=None,
+    console=False,
+    disable_windowed_traceback=False,
+    argv_emulation=False,
+    target_arch=None,
+    codesign_identity=None,
+    entitlements_file=None,
+    icon=['icon.ico'],
+)
+</file>
+
+<file path="requirements.txt">
+PyQt5
+requests
+pyinstaller
+</file>
+
+<file path="README.md">
+### **HOW TO USE:** Convert to EXE
+
+We will use **PyInstaller**.
+
+1.  **Install PyInstaller:**
+    Open your terminal/command prompt and run:
+    ```bash
+    pip install -r requirements.txt
+    ```
+
+2.  **Build the EXE:**
+    Run this specific command in your terminal (make sure you are in the folder with your script and `icon.ico`).
+
+    ```bash
+    pyinstaller --noconsole --onefile --icon=icon.ico --add-data "icon.ico;." bing_clone.py
+    ```
+
+    **Explanation of flags:**
+    *   `--noconsole`: The black command window won't pop up when you run the app.
+    *   `--onefile`: Bundles everything into a single `.exe` file.
+    *   `--icon=icon.ico`: Sets the icon of the `.exe` file itself (what you see on desktop).
+    *   `--add-data "icon.ico;."`: **Crucial.** This packs the image file *inside* the `.exe` so the program can use it for the tray icon.
+        *   *Note: If you are on Mac/Linux, use a colon `:` instead of a semicolon `;` (e.g., `"icon.ico:."`).*
+
+3.  **Locate your App:**
+    you can find your .exe inside the dist folder.
+    Once finished, go to the **`dist`** folder created in your directory. You will find `bing_clone.exe`.
+
+You can now move this `.exe` anywhere, set it to run on startup, and it will work with the tray icon included!
+</file>
+
+</files>
